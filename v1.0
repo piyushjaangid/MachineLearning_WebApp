@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Run Your ML Model</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { max-width: 600px; margin: auto; }
+        .form-group { margin-bottom: 15px; }
+        .form-group label { display: block; }
+        .form-group textarea, .form-group select, .form-group input { width: 100%; padding: 8px; }
+        .form-group button { padding: 10px 20px; }
+        .result { margin-top: 20px; padding: 10px; border: 1px solid #ccc; }
+        .status { margin-top: 20px; padding: 10px; border: 1px solid #ccc; background-color: #f9f9f9; }
+        .preview { margin-top: 20px; padding: 10px; border: 1px solid #ccc; }
+        .progress { margin-top: 20px; }
+    </style>
+    <link rel="stylesheet" href="https://pyscript.net/latest/pyscript.css">
+    <script defer src="https://pyscript.net/latest/pyscript.js"></script>
+    <script>
+        let previewSuccessful = false;
+
+        async function loadPackages() {
+            await pyodide.loadPackage("pandas");
+            await pyodide.loadPackage("scikit-learn");
+        }
+
+        async function init() {
+            await loadPackages();
+            pyscript.interpreter.run(`
+import pandas as pd
+from js import document, FileReader
+from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.svm import SVC
+from sklearn.naive_bayes import GaussianNB
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.cluster import KMeans
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, AdaBoostClassifier
+from sklearn.decomposition import PCA
+from sklearn.metrics import (
+    confusion_matrix, accuracy_score, precision_score, recall_score,
+    f1_score, roc_auc_score, roc_curve
+)
+import json
+
+sheet_id = "1FgYIaAGNhxklBKD74DY-tAwEw20HCs9S_aP-mlUh6cA"
+sheet_name = "MLSheetPython"
+
+def update_status(message):
+    status_div = document.getElementById('status')
+    status_div.innerHTML = message
+
+def read_google_sheet(sheet_id, sheet_name):
+    update_status("Accessing Google Sheet...")
+    url = f'https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={sheet_name}'
+    df = pd.read_csv(url)
+    update_status("Google Sheet accessed successfully.")
+    return df
+
+def calculate_metrics(y_true, y_pred, problem_type):
+    cm = confusion_matrix(y_true, y_pred)
+    accuracy = accuracy_score(y_true, y_pred)
+    precision = precision_score(y_true, y_pred)
+    recall = recall_score(y_true, y_pred)
+    f1 = f1_score(y_true, y_pred)
+    specificity = cm[0, 0] / (cm[0, 0] + cm[0, 1])
+    lr_plus = recall / (1 - specificity)
+    odds_ratio = (cm[1, 1] * cm[0, 0]) / (cm[1, 0] * cm[0, 1])
+    prevalence_threshold = (pyodide.js.math.sqrt(cm[1, 1] + cm[1, 0]) - pyodide.js.math.sqrt(cm[0, 1] + cm[0, 0])) / (cm[1, 1] + cm[0, 0] + cm[1, 0] + cm[0, 1])
+    roc_auc = roc_auc_score(y_true, y_pred)
+    fpr, tpr, _ = roc_curve(y_true, y_pred)
+    roc_curve_data = list(zip(fpr, tpr))
+    return {
+        'confusion_matrix': cm.tolist(),
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1_score': f1,
+        'specificity': specificity,
+        'lr_plus': lr_plus,
+        'odds_ratio': odds_ratio,
+        'prevalence_threshold': prevalence_threshold,
+        'roc_auc': roc_auc,
+        'roc_curve': roc_curve_data
+    }
+
+def populate_dropdowns(df):
+    columns = df.columns.tolist()
+    dependent_var = document.getElementById('dependentVar')
+    independent_vars = document.getElementById('independentVars')
+    dependent_var.innerHTML = ''
+    independent_vars.innerHTML = ''
+
+    for col in columns:
+        option = document.createElement('option')
+        option.value = col
+        option.text = col
+        dependent_var.appendChild(option)
+
+        multi_option = option.cloneNode(True)
+        independent_vars.appendChild(multi_option)
+
+def preview_data():
+    update_status("Previewing data...")
+    data_input = document.getElementById('dataInput').value
+    file_input = document.getElementById('fileInput').files[0]
+    preview_div = document.getElementById('preview')
+
+    try:
+        if data_input:
+            df = pd.read_csv(pd.compat.StringIO(data_input))
+            preview_div.innerHTML = df.head().to_html()
+            update_status("Data previewed successfully.")
+            return True
+        elif file_input:
+            reader = FileReader.new()
+            reader.onprogress = lambda e: update_status(f"Reading file... {int(e.loaded / e.total * 100)}%")
+            reader.onload = lambda e: preview_file(e)
+            reader.readAsText(file_input)
+            return True
+        else:
+            df = read_google_sheet(sheet_id, sheet_name)
+            preview_div.innerHTML = df.head().to_html()
+            update_status("Data previewed successfully.")
+            return True
+    except Exception as e:
+        update_status(f"Error previewing data: {str(e)}")
+        return False
+
+def preview_file(e):
+    try:
+        content = e.target.result
+        df = pd.read_csv(pd.compat.StringIO(content))
+        preview_div = document.getElementById('preview')
+        preview_div.innerHTML = df.head().to_html()
+        update_status("File previewed successfully.")
+    except Exception as e:
+        update_status(f"Error previewing file: {str(e)}")
+
+def run_model():
+    update_status("Running model...")
+    try:
+        df = read_google_sheet(sheet_id, sheet_name)
+        dependent_var = document.getElementById('dependentVar').value
+        independent_vars = [opt.value for opt in document.getElementById('independentVars').selectedOptions]
+        problem_type = document.getElementById('problemType').value
+        algorithm = document.getElementById('algorithm').value
+
+        X = df[independent_vars].values
+        y = df[dependent_var].values
+
+        model_class = {
+            'LinearRegression': LinearRegression,
+            'LogisticRegression': LogisticRegression,
+            'DecisionTree': DecisionTreeClassifier,
+            'SVM': SVC,
+            'NaiveBayes': GaussianNB,
+            'KNN': KNeighborsClassifier,
+            'KMeans': KMeans,
+            'RandomForest': RandomForestClassifier,
+            'PCA': PCA,
+            'GradientBoosting': GradientBoostingClassifier,
+            'AdaBoosting': AdaBoostClassifier
+        }[algorithm]
+
+        model = model_class()
+        model.fit(X, y)
+        y_pred = model.predict(X)
+
+        metrics = calculate_metrics(y, y_pred, problem_type)
+        result_div = document.getElementById('result')
+        result_div.innerHTML = json.dumps(metrics, indent=2)
+        update_status("Model run successfully.")
+    except Exception as e:
+        update_status(f"Error running model: {str(e)}")
+
+df = read_google_sheet(sheet_id, sheet_name)
+populate_dropdowns(df)
+            `);
+        }
+
+        window.addEventListener('load', init);
+
+        async function previewData() {
+            previewSuccessful = await pyscript.interpreter.run('preview_data()');
+        }
+
+        async function runModel() {
+            if (previewSuccessful) {
+                await pyscript.interpreter.run('run_model()');
+            } else {
+                alert("Please ensure data is previewed successfully before running the model.");
+            }
+        }
+    </script>
+</head>
+<body>
+    <div class="container">
+        <h1>Run Your ML Model</h1>
+
+        <div class="form-group">
+            <label for="dataInput">Enter Data (Col1, Col2...)</label>
+            <textarea id="dataInput" rows="4" placeholder="Enter data manually"></textarea>
+        </div>
+
+        <div class="form-group">
+            <label for="fileInput">Or Upload CSV/Excel</label>
+            <input type="file" id="fileInput">
+        </div>
+
+        <div class="form-group">
+            <button onclick="previewData()">Preview Data</button>
+        </div>
+
+        <div class="form-group">
+            <label for="dependentVar">Select Dependent Variable</label>
+            <select id="dependentVar"></select>
+        </div>
+
+        <div class="form-group">
+            <label for="independentVars">Select Independent Variables</label>
+            <select id="independentVars" multiple></select>
+        </div>
+
+        <div class="form-group">
+            <label for="problemType">Select Problem Type</label>
+            <select id="problemType">
+                <option value="classification">Classification</option>
+                <option value="regression">Regression</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label for="algorithm">Select Algorithm</label>
+            <select id="algorithm">
+                <option value="LinearRegression">Linear Regression</option>
+                <option value="LogisticRegression">Logistic Regression</option>
+                <option value="DecisionTree">Decision Tree</option>
+                <option value="SVM">SVM</option>
+                <option value="NaiveBayes">Naive Bayes</option>
+                <option value="KNN">KNN</option>
+                <option value="KMeans">K-Means</option>
+                <option value="RandomForest">Random Forest</option>
+                <option value="PCA">PCA</option>
+                <option value="GradientBoosting">Gradient Boosting</option>
+                <option value="AdaBoosting">AdaBoosting</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <button onclick="runModel()">Run Model</button>
+        </div>
+
+        <div class="status" id="status"></div>
+        <div class="preview" id="preview"></div>
+        <div class="result" id="result"></div>
+        <div class="progress" id="progress"><progress value="0" max="100"></progress></div>
+    </div>
+</body>
+</html>
